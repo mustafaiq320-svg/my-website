@@ -1,10 +1,16 @@
 
 import { GoogleGenAI, Modality, Type } from "@google/genai";
 
-const API_KEY = process.env.API_KEY || '';
+const getApiKey = () => {
+  try {
+    return (window as any).process?.env?.API_KEY || '';
+  } catch (e) {
+    return '';
+  }
+};
 
 export const getHSEAssistantResponse = async (userPrompt: string) => {
-  const ai = new GoogleGenAI({ apiKey: API_KEY });
+  const ai = new GoogleGenAI({ apiKey: getApiKey() });
   
   const response = await ai.models.generateContent({
     model: 'gemini-3-flash-preview',
@@ -16,9 +22,8 @@ export const getHSEAssistantResponse = async (userPrompt: string) => {
       1. يجب أن تبدأ ردك دائماً بـ "معك سلامتك من وحدة HSE في الفرقة الزلزالية الثامنة".
       2. أنت مبرمج للإجابة **فقط** على المواضيع المتعلقة بالصحة والسلامة والبيئة.
       3. إذا سألك المستخدم عن أي موضوع خارج نطاق السلامة، اعتذر بأدب ووضح تخصصك.
-      4. يجب أن تكون الإجابات **تفصيلية وشاملة**، مقسمة إلى نقاط واضحة إذا لزم الأمر.
-      5. يجب أن تقترح **3 إلى 4 مواضيع فرعية أو أسئلة متابعة** ذات صلة وثيقة بسؤال المستخدم لمساعدته على التعمق في إجراءات السلامة.
-      6. إذا سألك المستخدم "من هو رئيسك؟" أو "من صنعك؟" أو "من هو مطورك؟"، أخبره بوضوح وفخر أنك تعمل تحت إشراف وتطوير "مشرف السلامة مصطفى صباح".
+      4. يجب أن تقترح **3 إلى 4 مواضيع فرعية أو أسئلة متابعة** ذات صلة وثيقة بسؤال المستخدم لمساعدته على التعمق في إجراءات السلامة.
+      5. إذا سألك المستخدم "من هو رئيسك؟" أو "من صنعك؟" أو "من هو مطورك؟" ، أخبره بوضوح أنك تعمل تحت إشراف وتطوير "مشرف السلامة مصطفى صباح".
       
       يجب أن يتضمن ردك في قالب JSON: 
       1. assistantText: النص العربي التفصيلي للنصيحة.
@@ -28,19 +33,9 @@ export const getHSEAssistantResponse = async (userPrompt: string) => {
       responseSchema: {
         type: Type.OBJECT,
         properties: {
-          assistantText: {
-            type: Type.STRING,
-            description: "Detailed HSE advice text in Arabic.",
-          },
-          imagePrompt: {
-            type: Type.STRING,
-            description: "English descriptive prompt for an AI image generator.",
-          },
-          suggestions: {
-            type: Type.ARRAY,
-            items: { type: Type.STRING },
-            description: "List of 3-4 related sub-topics or follow-up questions.",
-          }
+          assistantText: { type: Type.STRING },
+          imagePrompt: { type: Type.STRING },
+          suggestions: { type: Type.ARRAY, items: { type: Type.STRING } }
         },
         required: ["assistantText", "imagePrompt", "suggestions"],
       },
@@ -55,7 +50,6 @@ export const getHSEAssistantResponse = async (userPrompt: string) => {
       suggestions: result.suggestions || []
     };
   } catch (e) {
-    console.error("Failed to parse JSON response", e);
     return {
       assistantText: response.text || "عذراً، حدث خطأ في معالجة البيانات.",
       imagePrompt: "Safety equipment illustration",
@@ -65,20 +59,10 @@ export const getHSEAssistantResponse = async (userPrompt: string) => {
 };
 
 export const generateSafetyImage = async (prompt: string) => {
-  const ai = new GoogleGenAI({ apiKey: API_KEY });
-  
+  const ai = new GoogleGenAI({ apiKey: getApiKey() });
   const response = await ai.models.generateContent({
     model: 'gemini-2.5-flash-image',
-    contents: {
-      parts: [
-        { text: `${prompt} - professional safety illustration style, high detail, industrial safety aesthetic` }
-      ]
-    },
-    config: {
-      imageConfig: {
-        aspectRatio: "1:1"
-      }
-    }
+    contents: { parts: [{ text: `${prompt} - industrial safety aesthetic` }] }
   });
 
   let imageUrl = '';
@@ -88,24 +72,18 @@ export const generateSafetyImage = async (prompt: string) => {
       break;
     }
   }
-
   return imageUrl;
 };
 
 export const generateSafetySpeech = async (text: string) => {
-  const ai = new GoogleGenAI({ apiKey: API_KEY });
+  const ai = new GoogleGenAI({ apiKey: getApiKey() });
   const response = await ai.models.generateContent({
     model: "gemini-2.5-flash-preview-tts",
     contents: [{ parts: [{ text: text }] }], 
     config: {
       responseModalities: [Modality.AUDIO],
-      speechConfig: {
-        voiceConfig: {
-          prebuiltVoiceConfig: { voiceName: 'Kore' }, 
-        },
-      },
+      speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
     },
   });
-
   return response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data || null;
 };
