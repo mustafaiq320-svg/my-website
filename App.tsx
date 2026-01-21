@@ -1,13 +1,13 @@
 
 import React, { useState, useCallback, useRef, useEffect } from 'react';
-import Header from './components/Header';
-import ChatWindow from './components/ChatWindow';
-import InputArea from './components/InputArea';
-import Sidebar from './components/Sidebar';
-import LiveCallOverlay from './components/LiveCallOverlay';
-import { Message, Chat } from './types';
-import { getHSEAssistantResponse, generateSafetyImage, generateSafetySpeech } from './services/geminiService';
-import { connectToLiveSafety, encodeAudio, decodeAudio, decodeAudioData } from './services/liveService';
+import Header from './components/Header.tsx';
+import ChatWindow from './components/ChatWindow.tsx';
+import InputArea from './components/InputArea.tsx';
+import Sidebar from './components/Sidebar.tsx';
+import LiveCallOverlay from './components/LiveCallOverlay.tsx';
+import { Message, Chat } from './types.ts';
+import { getHSEAssistantResponse, generateSafetyImage, generateSafetySpeech } from './services/geminiService.ts';
+import { connectToLiveSafety, encodeAudio, decodeAudio, decodeAudioData } from './services/liveService.ts';
 
 const STORAGE_KEY = 'salamatuk_chats_history';
 
@@ -30,7 +30,6 @@ const App: React.FC = () => {
   const progressIntervalRef = useRef<number | null>(null);
   const currentMessageIdRef = useRef<string | null>(null);
 
-  // تحميل المحادثات عند بدء التشغيل
   useEffect(() => {
     const savedChats = localStorage.getItem(STORAGE_KEY);
     if (savedChats) {
@@ -47,14 +46,12 @@ const App: React.FC = () => {
     }
   }, []);
 
-  // حفظ المحادثات عند أي تغيير
   useEffect(() => {
     if (chats.length > 0) {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(chats));
     }
   }, [chats]);
 
-  // تهيئة سياق الصوت
   const initAudio = () => {
     if (!audioContextRef.current) {
       audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
