@@ -1,0 +1,7 @@
+{
+  "name": "سلامتك (Salamatuk) - HSE Assistant",
+  "description": "An AI-powered Health, Safety, and Environment (HSE) assistant that provides professional advice and illustrative safety images in Arabic.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
