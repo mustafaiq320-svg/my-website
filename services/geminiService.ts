@@ -3,6 +3,7 @@ import { GoogleGenAI, Modality, Type } from "@google/genai";
 
 const getApiKey = () => {
   try {
+    // محاولة جلب المفتاح من البيئة
     return (window as any).process?.env?.API_KEY || '';
   } catch (e) {
     return '';
@@ -10,7 +11,8 @@ const getApiKey = () => {
 };
 
 export const getHSEAssistantResponse = async (userPrompt: string) => {
-  const ai = new GoogleGenAI({ apiKey: getApiKey() });
+  const apiKey = getApiKey();
+  const ai = new GoogleGenAI({ apiKey });
   
   const response = await ai.models.generateContent({
     model: 'gemini-3-flash-preview',
@@ -59,7 +61,8 @@ export const getHSEAssistantResponse = async (userPrompt: string) => {
 };
 
 export const generateSafetyImage = async (prompt: string) => {
-  const ai = new GoogleGenAI({ apiKey: getApiKey() });
+  const apiKey = getApiKey();
+  const ai = new GoogleGenAI({ apiKey });
   const response = await ai.models.generateContent({
     model: 'gemini-2.5-flash-image',
     contents: { parts: [{ text: `${prompt} - industrial safety aesthetic` }] }
@@ -76,7 +79,8 @@ export const generateSafetyImage = async (prompt: string) => {
 };
 
 export const generateSafetySpeech = async (text: string) => {
-  const ai = new GoogleGenAI({ apiKey: getApiKey() });
+  const apiKey = getApiKey();
+  const ai = new GoogleGenAI({ apiKey });
   const response = await ai.models.generateContent({
     model: "gemini-2.5-flash-preview-tts",
     contents: [{ parts: [{ text: text }] }], 
