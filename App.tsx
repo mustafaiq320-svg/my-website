@@ -187,12 +187,13 @@ const App: React.FC = () => {
         } : c));
       });
 
-      generateSafetySpeech(response.assistantText).then(aud => {
+      // Fix truthiness check on void return by ensuring the service returns a string and checking its value
+      generateSafetySpeech(response.assistantText).then((aud: string) => {
         setChats(prev => prev.map(c => c.id === currentId ? {
           ...c,
           messages: c.messages.map(m => m.id === assistantId ? { ...m, audio: aud, loadingAudio: false } : m)
         } : c));
-        if (aud) playAudio(aud, assistantId);
+        if (aud && aud.length > 0) playAudio(aud, assistantId);
       }).catch(() => {
         setChats(prev => prev.map(c => c.id === currentId ? {
           ...c,
