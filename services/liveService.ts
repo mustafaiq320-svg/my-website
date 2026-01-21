@@ -1,14 +1,6 @@
 
 import { GoogleGenAI, LiveServerMessage, Modality } from '@google/genai';
 
-const getApiKey = () => {
-  try {
-    return (window as any).process?.env?.API_KEY || '';
-  } catch (e) {
-    return '';
-  }
-};
-
 export function encodeAudio(bytes: Uint8Array) {
   let binary = '';
   for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
@@ -39,21 +31,27 @@ export const connectToLiveSafety = (callbacks: {
   onTranscription: (text: string, role: 'user' | 'model') => void;
   onClose: () => void;
 }) => {
-  const ai = new GoogleGenAI({ apiKey: getApiKey() });
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   return ai.live.connect({
     model: 'gemini-2.5-flash-native-audio-preview-12-2025',
     config: {
       responseModalities: [Modality.AUDIO],
       speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Puck' } } },
-      systemInstruction: 'أنت الآن في مكالمة صوتية مباشرة بصفتك "سلامتك" من وحدة HSE. كن سريع الاستجابة، واضحاً، ومختصراً لأن المستخدم يستمع إليك ولا يقرأ.',
+      systemInstruction: 'أنت الآن في مكالمة صوتية مباشرة بصفتك "سلامتك" من وحدة HSE. كن سريع الاستجابة ومختصراً.',
     },
     callbacks: {
       onopen: () => console.log('Live session opened'),
       onmessage: async (message: LiveServerMessage) => {
-        if (message.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data) callbacks.onAudioChunk(message.serverContent.modelTurn.parts[0].inlineData.data);
+        if (message.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data) {
+          callbacks.onAudioChunk(message.serverContent.modelTurn.parts[0].inlineData.data);
+        }
         if (message.serverContent?.interrupted) callbacks.onInterrupted();
-        if (message.serverContent?.inputAudioTranscription) callbacks.onTranscription(message.serverContent.inputAudioTranscription.text, 'user');
-        if (message.serverContent?.outputTranscription) callbacks.onTranscription(message.serverContent.outputTranscription.text, 'model');
+        if (message.serverContent?.inputAudioTranscription) {
+          callbacks.onTranscription(message.serverContent.inputAudioTranscription.text, 'user');
+        }
+        if (message.serverContent?.outputTranscription) {
+          callbacks.onTranscription(message.serverContent.outputTranscription.text, 'model');
+        }
       },
       onclose: () => callbacks.onClose(),
       onerror: (e) => console.error('Live error', e),

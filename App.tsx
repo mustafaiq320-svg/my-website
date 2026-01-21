@@ -7,7 +7,7 @@ import Sidebar from './components/Sidebar.tsx';
 import LiveCallOverlay from './components/LiveCallOverlay.tsx';
 import { Message, Chat } from './types.ts';
 import { getHSEAssistantResponse, generateSafetyImage, generateSafetySpeech } from './services/geminiService.ts';
-import { connectToLiveSafety, encodeAudio, decodeAudio, decodeAudioData } from './services/liveService.ts';
+import { connectToLiveSafety } from './services/liveService.ts';
 
 const STORAGE_KEY = 'salamatuk_v2_history';
 
@@ -25,18 +25,26 @@ const App: React.FC = () => {
   const progressIntervalRef = useRef<number | null>(null);
   const currentMessageIdRef = useRef<string | null>(null);
 
-  // تحميل سريع للبيانات
+  // تحميل آمن للبيانات
   useEffect(() => {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) {
-      try {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
         const parsed = JSON.parse(saved);
-        setChats(parsed.map((c: any) => ({
-          ...c,
-          timestamp: new Date(c.timestamp),
-          messages: c.messages.map((m: any) => ({ ...m, timestamp: new Date(m.timestamp) }))
-        })));
-      } catch (e) { console.error("History load error", e); }
+        if (Array.isArray(parsed)) {
+          setChats(parsed.map((c: any) => ({
+            ...c,
+            timestamp: new Date(c.timestamp || Date.now()),
+            messages: Array.isArray(c.messages) ? c.messages.map((m: any) => ({ 
+              ...m, 
+              timestamp: new Date(m.timestamp || Date.now()) 
+            })) : []
+          })));
+        }
+      }
+    } catch (e) { 
+      console.error("Critical: LocalStorage data corrupted, clearing...", e);
+      localStorage.removeItem(STORAGE_KEY);
     }
   }, []);
 
@@ -44,7 +52,11 @@ const App: React.FC = () => {
   useEffect(() => {
     if (chats.length > 0) {
       const timer = setTimeout(() => {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(chats));
+        try {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(chats));
+        } catch (e) {
+          console.error("Save history error", e);
+        }
       }, 1000);
       return () => clearTimeout(timer);
     }
@@ -163,7 +175,6 @@ const App: React.FC = () => {
       setChats(prev => prev.map(c => c.id === currentId ? { ...c, messages: [...c.messages, assistantMsg] } : c));
       setIsLoading(false);
 
-      // تشغيل متوازي للوسائط (صوت وصورة) دون حظر الواجهة
       generateSafetyImage(response.imagePrompt).then(img => {
         setChats(prev => prev.map(c => c.id === currentId ? {
           ...c,
@@ -212,7 +223,11 @@ const App: React.FC = () => {
       <main className="flex-1 flex flex-col relative bg-[#0f0a09]">
         <div className="flex items-center justify-between border-b border-white/5 pr-2 h-16 shrink-0">
           <Header />
-          <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className="p-4 text-slate-500 hover:text-white transition-opacity">
+          <button 
+            onClick={() => setIsSidebarOpen(!isSidebarOpen)} 
+            className="p-4 text-slate-500 hover:text-white transition-opacity"
+            aria-label="Toggle Sidebar"
+          >
             <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16m-7 6h7" />
             </svg>

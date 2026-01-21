@@ -41,9 +41,6 @@
       }
       @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
     </style>
-    <script>
-      window.process = { env: { NODE_ENV: 'production' } };
-    </script>
     <script type="importmap">
 {
   "imports": {
@@ -56,11 +53,31 @@
   }
 }
 </script>
+    <script>
+      // تحسين مراقبة الأخطاء لتجنب "Unknown error"
+      window.addEventListener('error', function(e) {
+        var message = e.message || (e.error && e.error.message) || "Script Error (Check CORS/Imports)";
+        console.error('Salamatuk Global Error:', message, e.filename, e.lineno);
+        
+        // إذا كان الخطأ متعلقاً بالتحميل، أظهر تنبيهاً للمستخدم
+        if (message.toLowerCase().includes('import') || message.includes('Script Error')) {
+           var root = document.getElementById('root');
+           if (root && root.innerHTML.includes('loader')) {
+             root.innerHTML = '<div style="height:100vh;display:flex;align-items:center;justify-content:center;color:#ea580c;text-align:center;padding:20px;direction:rtl;"><div><h2>عذراً، فشل تحميل النظام</h2><p>يرجى التأكد من اتصال الإنترنت وتحديث الصفحة.</p><button onclick="location.reload()" style="margin-top:20px;padding:10px 20px;background:#ea580c;color:white;border:none;border-radius:8px;cursor:pointer;">تحديث</button></div></div>';
+           }
+        }
+      }, true);
+
+      window.addEventListener('unhandledrejection', function(event) {
+        console.error('Salamatuk Unhandled Promise:', event.reason);
+      });
+    </script>
   </head>
   <body>
     <div id="root">
       <div class="loading-screen">
         <div class="loader"></div>
+        <p style="margin-top: 15px; color: #64748b; font-size: 14px; font-weight: 500;">جاري تحميل "سلامتك"...</p>
       </div>
     </div>
     <script type="module" src="./index.tsx"></script>
