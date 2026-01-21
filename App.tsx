@@ -1,252 +1,354 @@
 
-import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
-import Header from './components/Header.tsx';
-import ChatWindow from './components/ChatWindow.tsx';
-import InputArea from './components/InputArea.tsx';
-import Sidebar from './components/Sidebar.tsx';
-import LiveCallOverlay from './components/LiveCallOverlay.tsx';
-import { Message, Chat } from './types.ts';
-import { getHSEAssistantResponse, generateSafetyImage, generateSafetySpeech } from './services/geminiService.ts';
-import { connectToLiveSafety } from './services/liveService.ts';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
+import Header from './components/Header';
+import ChatWindow from './components/ChatWindow';
+import InputArea from './components/InputArea';
+import Sidebar from './components/Sidebar';
+import LiveCallOverlay from './components/LiveCallOverlay';
+import { Message, Chat } from './types';
+import { getHSEAssistantResponse, generateSafetyImage, generateSafetySpeech } from './services/geminiService';
+import { connectToLiveSafety, encodeAudio, decodeAudio, decodeAudioData } from './services/liveService';
 
-const STORAGE_KEY = 'salamatuk_v2_history';
+const STORAGE_KEY = 'salamatuk_chats_history';
 
 const App: React.FC = () => {
   const [chats, setChats] = useState<Chat[]>([]);
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [isSidebarOpen, setIsSidebarOpen] = useState(window.innerWidth > 768);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isLiveCalling, setIsLiveCalling] = useState(false);
   const [isConnectingLive, setIsConnectingLive] = useState(false);
   
   const audioContextRef = useRef<AudioContext | null>(null);
+  const liveSessionPromiseRef = useRef<Promise<any> | null>(null);
+  const liveSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
+  const nextStartTimeRef = useRef<number>(0);
+  const liveMediaStreamRef = useRef<MediaStream | null>(null);
   const audioBuffersRef = useRef<Record<string, AudioBuffer>>({});
   const activeSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  const startTimeRef = useRef<number>(0);
   const progressIntervalRef = useRef<number | null>(null);
   const currentMessageIdRef = useRef<string | null>(null);
 
-  // تحميل آمن للبيانات
+  // تحميل المحادثات عند بدء التشغيل
   useEffect(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) {
-          setChats(parsed.map((c: any) => ({
-            ...c,
-            timestamp: new Date(c.timestamp || Date.now()),
-            messages: Array.isArray(c.messages) ? c.messages.map((m: any) => ({ 
-              ...m, 
-              timestamp: new Date(m.timestamp || Date.now()) 
-            })) : []
-          })));
-        }
+    const savedChats = localStorage.getItem(STORAGE_KEY);
+    if (savedChats) {
+      try {
+        const hydrated = JSON.parse(savedChats).map((c: any) => ({
+          ...c, 
+          timestamp: new Date(c.timestamp),
+          messages: c.messages.map((m: any) => ({ ...m, timestamp: new Date(m.timestamp) }))
+        }));
+        setChats(hydrated);
+      } catch (e) {
+        console.error("Error loading chats", e);
       }
-    } catch (e) { 
-      console.error("Critical: LocalStorage data corrupted, clearing...", e);
-      localStorage.removeItem(STORAGE_KEY);
     }
   }, []);
 
-  // حفظ في الخلفية
+  // حفظ المحادثات عند أي تغيير
   useEffect(() => {
     if (chats.length > 0) {
-      const timer = setTimeout(() => {
-        try {
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(chats));
-        } catch (e) {
-          console.error("Save history error", e);
-        }
-      }, 1000);
-      return () => clearTimeout(timer);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(chats));
     }
   }, [chats]);
 
+  // تهيئة سياق الصوت
   const initAudio = () => {
     if (!audioContextRef.current) {
       audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
     }
   };
 
-  const stopAudio = useCallback(() => {
+  const stopAudioCompletely = useCallback(() => {
     if (activeSourceRef.current) {
-      try { activeSourceRef.current.stop(); } catch(e) {}
+      activeSourceRef.current.stop();
       activeSourceRef.current = null;
     }
     if (progressIntervalRef.current) {
       clearInterval(progressIntervalRef.current);
       progressIntervalRef.current = null;
     }
-    if (activeChatId && currentMessageIdRef.current) {
+    currentMessageIdRef.current = null;
+    
+    if (activeChatId) {
       setChats(prev => prev.map(c => c.id === activeChatId ? {
         ...c,
-        messages: c.messages.map(m => m.id === currentMessageIdRef.current ? { ...m, isSpeaking: false } : m)
+        messages: c.messages.map(m => ({ ...m, isSpeaking: false, isPaused: false, playbackOffset: 0 }))
       } : c));
     }
-    currentMessageIdRef.current = null;
   }, [activeChatId]);
 
   const playAudio = async (base64Audio: string, messageId: string) => {
     initAudio();
-    const ctx = audioContextRef.current!;
-    if (ctx.state === 'suspended') await ctx.resume();
+    if (!audioContextRef.current || !activeChatId) return;
     
-    stopAudio();
+    if (currentMessageIdRef.current && currentMessageIdRef.current !== messageId) {
+      stopAudioCompletely();
+    }
+    
+    if (audioContextRef.current.state === 'suspended') {
+      await audioContextRef.current.resume();
+    }
 
     try {
       let buffer = audioBuffersRef.current[messageId];
       if (!buffer) {
-        const binary = atob(base64Audio);
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        const binaryString = atob(base64Audio);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
         const dataInt16 = new Int16Array(bytes.buffer);
-        buffer = ctx.createBuffer(1, dataInt16.length, 24000);
+        buffer = audioContextRef.current.createBuffer(1, dataInt16.length, 24000);
         const channelData = buffer.getChannelData(0);
         for (let i = 0; i < dataInt16.length; i++) channelData[i] = dataInt16[i] / 32768.0;
         audioBuffersRef.current[messageId] = buffer;
       }
 
-      const source = ctx.createBufferSource();
+      const source = audioContextRef.current.createBufferSource();
       source.buffer = buffer;
-      source.connect(ctx.destination);
+      source.connect(audioContextRef.current.destination);
       
       source.onended = () => {
         if (activeSourceRef.current === source) {
-          stopAudio();
+          activeSourceRef.current = null;
+          if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
+          setChats(prev => prev.map(c => c.id === activeChatId ? {
+            ...c,
+            messages: c.messages.map(m => m.id === messageId ? { ...m, isSpeaking: false, currentTime: 0 } : m)
+          } : c));
         }
       };
 
       activeSourceRef.current = source;
       currentMessageIdRef.current = messageId;
-      const startTime = ctx.currentTime;
+      startTimeRef.current = audioContextRef.current.currentTime;
       
       setChats(prev => prev.map(c => c.id === activeChatId ? {
         ...c,
-        messages: c.messages.map(m => m.id === messageId ? { ...m, isSpeaking: true, duration: buffer.duration } : m)
+        messages: c.messages.map(m => m.id === messageId ? { ...m, isSpeaking: true } : m)
       } : c));
       
       source.start(0);
 
       progressIntervalRef.current = window.setInterval(() => {
-        const elapsed = ctx.currentTime - startTime;
+        if (!audioContextRef.current) return;
+        const currentElapsed = (audioContextRef.current.currentTime - startTimeRef.current);
         setChats(prev => prev.map(c => c.id === activeChatId ? {
           ...c,
-          messages: c.messages.map(m => m.id === messageId ? { ...m, currentTime: elapsed } : m)
+          messages: c.messages.map(m => m.id === messageId ? { ...m, currentTime: currentElapsed, duration: buffer.duration } : m)
         } : c));
       }, 100);
 
-    } catch (e) { console.error("Playback error", e); }
+    } catch (e) {
+      console.error("Audio error:", e);
+    }
   };
 
-  const activeChat = useMemo(() => chats.find(c => c.id === activeChatId) || null, [chats, activeChatId]);
+  const activeChat = chats.find(c => c.id === activeChatId) || null;
+  const messages = activeChat?.messages || [];
+
+  const handleStartLiveCall = async () => {
+    initAudio();
+    setIsLiveCalling(true);
+    setIsConnectingLive(true);
+    
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      liveMediaStreamRef.current = stream;
+      
+      const sessionPromise = connectToLiveSafety({
+        onAudioChunk: async (base64) => {
+          if (!audioContextRef.current) return;
+          const ctx = audioContextRef.current;
+          nextStartTimeRef.current = Math.max(nextStartTimeRef.current, ctx.currentTime);
+          const buffer = await decodeAudioData(decodeAudio(base64), ctx, 24000, 1);
+          const source = ctx.createBufferSource();
+          source.buffer = buffer;
+          source.connect(ctx.destination);
+          source.start(nextStartTimeRef.current);
+          nextStartTimeRef.current += buffer.duration;
+          liveSourcesRef.current.add(source);
+          source.onended = () => liveSourcesRef.current.delete(source);
+        },
+        onInterrupted: () => {
+          liveSourcesRef.current.forEach(s => { try { s.stop(); } catch(e) {} });
+          liveSourcesRef.current.clear();
+          nextStartTimeRef.current = 0;
+        },
+        onTranscription: (text, role) => {
+          console.log(`Live Transcription [${role}]: ${text}`);
+        },
+        onClose: () => {
+          handleEndLiveCall();
+        }
+      });
+
+      liveSessionPromiseRef.current = sessionPromise;
+      const session = await sessionPromise;
+      setIsConnectingLive(false);
+
+      const inputCtx = new AudioContext({ sampleRate: 16000 });
+      const source = inputCtx.createMediaStreamSource(stream);
+      const processor = inputCtx.createScriptProcessor(4096, 1, 1);
+      
+      processor.onaudioprocess = (e) => {
+        const inputData = e.inputBuffer.getChannelData(0);
+        const l = inputData.length;
+        const int16 = new Int16Array(l);
+        for (let i = 0; i < l; i++) int16[i] = inputData[i] * 32768;
+        
+        session.sendRealtimeInput({
+          media: {
+            data: encodeAudio(new Uint8Array(int16.buffer)),
+            mimeType: 'audio/pcm;rate=16000'
+          }
+        });
+      };
+
+      source.connect(processor);
+      processor.connect(inputCtx.destination);
+
+    } catch (e) {
+      console.error("Live call failed", e);
+      setIsLiveCalling(false);
+      setIsConnectingLive(false);
+    }
+  };
+
+  const handleEndLiveCall = () => {
+    setIsLiveCalling(false);
+    setIsConnectingLive(false);
+    if (liveMediaStreamRef.current) {
+      liveMediaStreamRef.current.getTracks().forEach(t => t.stop());
+      liveMediaStreamRef.current = null;
+    }
+    liveSourcesRef.current.forEach(s => { try { s.stop(); } catch(e) {} });
+    liveSourcesRef.current.clear();
+    nextStartTimeRef.current = 0;
+  };
 
   const handleSendMessage = useCallback(async (text: string) => {
     if (!text.trim()) return;
-    stopAudio();
     
-    const userMsg: Message = { id: Date.now().toString(), role: 'user', content: text, timestamp: new Date() };
-    let currentId = activeChatId;
+    stopAudioCompletely();
+    const userMsg: Message = { 
+      id: Date.now().toString(), 
+      role: 'user', 
+      content: text, 
+      timestamp: new Date() 
+    };
 
-    if (!currentId) {
-      currentId = Date.now().toString();
-      const newChat: Chat = { id: currentId, title: text.slice(0, 30), messages: [userMsg], timestamp: new Date() };
+    let chatId = activeChatId;
+    if (!chatId) {
+      chatId = Date.now().toString();
+      const newChat: Chat = {
+        id: chatId,
+        title: text.length > 30 ? text.substring(0, 30) + '...' : text,
+        messages: [userMsg],
+        timestamp: new Date()
+      };
       setChats(prev => [...prev, newChat]);
-      setActiveChatId(currentId);
+      setActiveChatId(chatId);
     } else {
-      setChats(prev => prev.map(c => c.id === currentId ? { ...c, messages: [...c.messages, userMsg], timestamp: new Date() } : c));
+      setChats(prev => prev.map(c => c.id === chatId ? {
+        ...c,
+        messages: [...c.messages, userMsg],
+        timestamp: new Date()
+      } : c));
     }
     
     setIsLoading(true);
 
     try {
-      const response = await getHSEAssistantResponse(text);
+      const { assistantText, imagePrompt, suggestions } = await getHSEAssistantResponse(text);
       const assistantId = (Date.now() + 1).toString();
       
       const assistantMsg: Message = { 
         id: assistantId, 
         role: 'assistant', 
-        content: response.assistantText, 
-        suggestions: response.suggestions,
-        timestamp: new Date(),
-        loadingImage: true,
+        content: assistantText, 
+        imagePrompt, 
+        suggestions,
+        timestamp: new Date(), 
+        loadingImage: true, 
         loadingAudio: true
       };
 
-      setChats(prev => prev.map(c => c.id === currentId ? { ...c, messages: [...c.messages, assistantMsg] } : c));
+      setChats(prev => prev.map(c => c.id === chatId ? {
+        ...c,
+        messages: [...c.messages, assistantMsg]
+      } : c));
+      
       setIsLoading(false);
 
-      generateSafetyImage(response.imagePrompt).then(img => {
-        setChats(prev => prev.map(c => c.id === currentId ? {
-          ...c,
-          messages: c.messages.map(m => m.id === assistantId ? { ...m, image: img, loadingImage: false } : m)
-        } : c));
-      }).catch(() => {
-         setChats(prev => prev.map(c => c.id === currentId ? {
-          ...c,
-          messages: c.messages.map(m => m.id === assistantId ? { ...m, loadingImage: false } : m)
-        } : c));
-      });
+      const [img, aud] = await Promise.all([
+        generateSafetyImage(imagePrompt).catch(() => null),
+        generateSafetySpeech(assistantText).catch(() => null)
+      ]);
 
-      // Fix truthiness check on void return by ensuring the service returns a string and checking its value
-      generateSafetySpeech(response.assistantText).then((aud: string) => {
-        setChats(prev => prev.map(c => c.id === currentId ? {
-          ...c,
-          messages: c.messages.map(m => m.id === assistantId ? { ...m, audio: aud, loadingAudio: false } : m)
-        } : c));
-        if (aud && aud.length > 0) playAudio(aud, assistantId);
-      }).catch(() => {
-        setChats(prev => prev.map(c => c.id === currentId ? {
-          ...c,
-          messages: c.messages.map(m => m.id === assistantId ? { ...m, loadingAudio: false } : m)
-        } : c));
-      });
+      setChats(prev => prev.map(c => c.id === chatId ? {
+        ...c,
+        messages: c.messages.map(m => 
+          m.id === assistantId ? { 
+            ...m, 
+            image: img || undefined, 
+            audio: aud || undefined, 
+            loadingImage: false, 
+            loadingAudio: false 
+          } : m
+        )
+      } : c));
 
-    } catch (e) {
-      console.error(e);
+      if (aud) playAudio(aud, assistantId);
+    } catch (error) {
+      console.error("AI Error:", error);
       setIsLoading(false);
     }
-  }, [activeChatId, stopAudio]);
+  }, [activeChatId, stopAudioCompletely]);
 
   return (
     <div className="h-screen bg-[#0f0a09] text-slate-200 flex font-sans overflow-hidden rtl" dir="rtl">
-      {isLiveCalling && <LiveCallOverlay onClose={() => setIsLiveCalling(false)} isConnecting={isConnectingLive} />}
+      {isLiveCalling && (
+        <LiveCallOverlay onClose={handleEndLiveCall} isConnecting={isConnectingLive} />
+      )}
       
       {isSidebarOpen && (
         <Sidebar 
           chats={chats} 
           activeChatId={activeChatId} 
           onSelectChat={setActiveChatId} 
-          onNewChat={() => { stopAudio(); setActiveChatId(null); }} 
-          onDeleteChat={(id) => setChats(prev => prev.filter(c => c.id !== id))} 
+          onNewChat={() => { stopAudioCompletely(); setActiveChatId(null); }} 
+          onDeleteChat={(id) => setChats(chats.filter(c => c.id !== id))} 
         />
       )}
       
-      <main className="flex-1 flex flex-col relative bg-[#0f0a09]">
-        <div className="flex items-center justify-between border-b border-white/5 pr-2 h-16 shrink-0">
+      <main className="flex-1 flex flex-col relative bg-[radial-gradient(circle_at_50%_50%,_#1a1210_0%,_#0f0a09_100%)]">
+        <div className="flex items-center justify-between border-b border-white/5 pr-2">
           <Header />
           <button 
             onClick={() => setIsSidebarOpen(!isSidebarOpen)} 
-            className="p-4 text-slate-500 hover:text-white transition-opacity"
-            aria-label="Toggle Sidebar"
+            className="p-4 text-slate-500 hover:text-white transition-colors"
+            aria-label={isSidebarOpen ? "إغلاق القائمة" : "فتح القائمة"}
           >
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16m-7 6h7" />
             </svg>
           </button>
         </div>
 
         <ChatWindow 
-          messages={activeChat?.messages || []} 
+          messages={messages} 
           isLoading={isLoading} 
           onPlayAudio={playAudio} 
-          onStopAudio={stopAudio} 
+          onStopAudio={stopAudioCompletely} 
           onRegenerateImage={() => {}} 
           onSelectSuggestion={handleSendMessage} 
         />
         
         <InputArea 
           onSendMessage={handleSendMessage} 
-          onStartLiveCall={() => setIsLiveCalling(true)} 
+          onStartLiveCall={handleStartLiveCall} 
           disabled={isLoading} 
         />
       </main>
